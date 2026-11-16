@@ -38,6 +38,7 @@
 - `tests/run.py`
 - `tests/selfcheck.py`
 - `tests/test_bridge.py`
+- `tests/test_candidate_selfcheck.py`
 - `tests/test_capabilities.py`
 - `tests/test_phase2.py`
 - `tests/test_phase3.py`
