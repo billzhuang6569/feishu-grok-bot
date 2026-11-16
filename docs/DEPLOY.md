@@ -71,7 +71,7 @@ initialize 建立暂停状态；只有 pause 状态且无残留 operation 才能
 
 ## 5. 停止、重启与健康
 
-先执行管理员 `gate-admin.py pause`，等待正常返回取得排空证明。之后向自己管理的 receiver PID 发 SIGTERM，等待退出；不要用按名称批量 kill。pause 阻塞或失败不等于排空，禁止随后 activate；残留 operations 要人工核实，不可删记录解锁。停 receiver 时它只终止自己的 consumer child。
+先执行管理员 `gate-admin.py pause`，等待正常返回取得排空证明。之后向自己管理的 receiver PID 发 SIGTERM，等待退出；不要用按名称批量 kill。pause 阻塞或失败不等于排空，禁止随后 activate；残留 operations 要人工核实，不可删记录解锁。停 receiver 时它终止自己的 consumer child，并取消自己的 UI child。UI 采用单 worker、32 消息有界合并队列，满载或停止可丢帧，主路径不等待 UI；CLI 内部 30 秒预算，pause/shutdown 检查取消并 kill/reap。shutdown 最多等 worker 250ms，未结束或回收失败报 ui_shutdown_unconfirmed；这不是排空证明，仍须保留 gate 屏障并人工核实。没有新增配置，详见 [进度协议](PROGRESS.md)。
 
 重启复用原 DB/gate：确认进程退出，`activate --mode new`，再启动唯一 receiver。切代也采用相同顺序，两模式共用 gate/DB。不得替换锁文件、删除 claims 或清空 pending/unknown。child 退出有最多五次退避重连；child 不退出即停止，local ready 但 upstream stale 不强行重启事件总线。外部无限自动重启会绕过退避意图，不应配置。
 

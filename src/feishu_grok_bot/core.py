@@ -131,6 +131,7 @@ class Bridge:
             raise ValueError('unsafe_state_path')
         if path.parent.stat().st_mode & 0o077 or path.parent.stat().st_uid != os.getuid():
             raise ValueError('state_directory_must_be_private')
+        self.path = path
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         path.chmod(0o600)
         self.db.execute('PRAGMA journal_mode=DELETE')
@@ -169,7 +170,11 @@ class Bridge:
         return row[0]
 
     def close(self):
+        drained = True
+        if self.progress is not None:
+            drained = self.progress.shutdown(self)
         self.db.close()
+        return drained
 
     def recover(self):
         # Only call while holding the lifetime receiver lock, before serving.
@@ -275,7 +280,7 @@ class Bridge:
     def feedback(self, mid, stage):
         if self.progress is not None and self.gate is not None:
             try:
-                self.progress.advance(self, mid, stage)
+                self.progress.submit(self, mid, stage)
             except Exception:
                 pass  # Optional UI must never change primary reply classification.
 

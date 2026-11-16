@@ -60,14 +60,14 @@ class Gate:
             con.close()
 
     @contextmanager
-    def lock(self, exclusive=False, name='drain.lock'):
+    def lock(self, exclusive=False, name='drain.lock', blocking=True):
         p = self.root/name
         fd = os.open(p, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             st = os.fstat(fd)
             if st.st_uid != os.getuid() or st.st_mode & 0o077:
                 raise Fenced('private_gate_lock_required')
-            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | (0 if blocking else fcntl.LOCK_NB))
             yield
         finally:
             os.close(fd)
@@ -117,8 +117,8 @@ class Gate:
             db.commit()
 
     @contextmanager
-    def lease(self, mode, mid, created_at=None, accept=False):
-        with self.lock(), self.db() as db:
+    def lease(self, mode, mid, created_at=None, accept=False, blocking=True):
+        with self.lock(blocking=blocking), self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT generation,mode,cutoff_ms,paused FROM control WHERE id=1').fetchone()
             if not row or row[3] or row[1] != mode:

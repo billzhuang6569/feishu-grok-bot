@@ -1,6 +1,6 @@
 # 发布 allowlist
 
-仅下列文件及候选 ALLOWLIST.json 可进入干净初始导入。每项 SHA-256 在 ALLOWLIST.json；manifest 不自哈希。全部代码、合成测试、部署模板均完整导出；原历史不可上传。
+仅下列文件及候选 ALLOWLIST.json 可进入干净初始导入。每项 SHA-256 在 ALLOWLIST.json；manifest 不自哈希。本清单共 43 项，加 ALLOWLIST.json 为 44 个公开文件。全部代码、合成测试、部署模板均完整导出；原历史不可上传。
 
 - `.gitignore`
 - `CONTRIBUTING.md`
@@ -44,3 +44,4 @@
 - `tests/test_phase3.py`
 - `tests/test_phase4.py`
 - `tests/test_receiver.py`
+- `tests/test_ui_isolation.py`

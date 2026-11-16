@@ -3,7 +3,7 @@
 | 范围 | 映射与差异 |
 |---|---|
 | src/** | 全部 Python 源码逐字节一致，无导出替换 |
-| tests/run.py、全部 test_*.py | 全部纯离线合成测试逐字节一致，包含 bridge/capabilities/receiver/phase2/phase3/phase4 |
+| tests/run.py、全部 test_*.py | 全部纯离线合成测试逐字节一致，包含 bridge/capabilities/receiver/phase2/phase3/phase4/ui_isolation |
 | tests/selfcheck.py | 唯一测试辅助文件差异：受限工作树另做显式旧源码映射核验；公开候选只核对自身 allowlist、散列和静态扫描 |
 | bin/** | 所有入口逐字节一致；selfcheck 入口执行本目录 tests/selfcheck.py |
 | templates/** | 三个通用受信模板逐字节一致，固定示例路径 |

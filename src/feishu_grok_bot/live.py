@@ -52,6 +52,10 @@ def load(path, live=False):
     return obj, Config(**obj['policy'], cli_profile=validate_profile(obj.get('cli_profile')))
 
 
+class UIUnreaped(BaseException):
+    """Retain gate crash barrier if child termination cannot be proved."""
+
+
 class Capabilities:
     def __init__(self, settings, enabled=False):
         if not enabled or settings.get('live_enabled') is not True:
@@ -68,6 +72,45 @@ class Capabilities:
                               stderr=subprocess.DEVNULL, timeout=30, check=False,
                               env=cli_environment())
         return json.loads(done.stdout)
+
+    def ui_send(self, argv, body, cancelled):
+        """One bounded UI child; cancellation kills and reaps before lease exit.
+
+        Text sends keep their existing capability and classification contract.
+        A failed reap escapes, leaving the durable gate operation barrier.
+        """
+        if cancelled():
+            return None
+        proc = subprocess.Popen([self.cli]+argv[1:], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=cli_environment())
+        deadline = time.monotonic()+30
+        try:
+            first = True
+            while not cancelled() and time.monotonic() < deadline:
+                try:
+                    out, _ = proc.communicate(input=body.encode() if first else None,
+                                              timeout=min(.1, max(.001, deadline-time.monotonic())))
+                    return json.loads(out)
+                except subprocess.TimeoutExpired:
+                    first = False
+            return None
+        finally:
+            # Any failed termination/reap must escape ordinary UI error
+            # handling. A still-live child is not an honestly drained lease.
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=1)
+            except Exception:
+                raise UIUnreaped() from None
+            for name in ('stdin', 'stdout'):
+                pipe = getattr(proc, name, None)
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass  # Close errors do not negate a confirmed child exit.
 
     def post(self, payload):
         # Deployment maps these names via protected service configuration.
@@ -119,10 +162,13 @@ def receive(settings, config, cap):
     health, recovery = Health(process=True), Recovery()
     stopping = False
     proc = None
+    bridge = None
 
     def stop(*_):
         nonlocal stopping
         stopping = True
+        if bridge is not None and bridge.progress is not None:
+            bridge.progress.shutdown()
         if proc is not None and proc.poll() is None:
             proc.terminate()
     signal.signal(signal.SIGTERM, stop)
@@ -219,8 +265,10 @@ def receive(settings, config, cap):
                 time.sleep(min(.2,max(0,deadline-time.monotonic())))
         return 0
     finally:
-        bridge.close()
+        drained = bridge.close()
         lock.close()
+        if not drained:
+            raise RuntimeError('ui_shutdown_unconfirmed')
 
 
 def live_bridge(settings, config):

@@ -15,6 +15,8 @@ bin/selfcheck
 
 测试使用合成数据、临时状态与 mock；runner 禁止网络和真实子进程。部署时须单独安装审核后的官方 CLI。
 
+启用 UI 后采用单 worker、32 消息有界合并队列；主路径只投递，不等待 UI。慢 UI 不拖住 Routine post、正文 send 或下一入站。队列满或停止时允许跳帧；UI CLI 可取消，unknown 不重放，pause 仍须取得真实排空证明。没有新增配置，见 [进度协议](docs/PROGRESS.md)。
+
 - [完整部署、迁移、停启和回滚](docs/DEPLOY.md)
 - [配置与行为兼容](docs/COMPATIBILITY.md)
 - [进度状态协议](docs/PROGRESS.md)

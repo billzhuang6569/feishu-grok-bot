@@ -2,10 +2,21 @@ import json
 import tempfile
 from pathlib import Path
 import unittest
-from feishu_grok_bot.core import Bridge
+from feishu_grok_bot.core import Bridge as AsyncBridge
 from feishu_grok_bot.gate import Gate
 from feishu_grok_bot.progress import Progress, card
 from test_bridge import CFG, event, response
+
+
+class Bridge(AsyncBridge):
+    """Drive the serialized backend directly for existing state-machine checks.
+
+    Public nonblocking submission/lifecycle is exercised in test_ui_isolation.
+    These checks deliberately observe every intermediate acknowledged frame.
+    """
+    def feedback(self, mid, stage):
+        if self.progress is not None and self.gate is not None:
+            self.progress.advance(self, mid, stage)
 
 
 class ProgressTests(unittest.TestCase):
@@ -101,7 +112,8 @@ class ProgressTests(unittest.TestCase):
         class Done:
             stdout=json.dumps(response()).encode()
         with patch.dict('os.environ',{'HOME':'/synthetic/home','POISON':'secret'},clear=True), \
-             patch('feishu_grok_bot.live.subprocess.run',return_value=Done()) as run:
+             patch('feishu_grok_bot.live.subprocess.run',return_value=Done()) as run, \
+             patch.object(cap, 'ui_send', side_effect=lambda argv, body, cancelled: cap.send(argv, body)):
             b.accept(event(),lambda p:200)
             for args,kw in run.call_args_list:
                 self.assertEqual(args[0][0],settings['cli_path'])

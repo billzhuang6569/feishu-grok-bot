@@ -5,8 +5,10 @@ No tool telemetry, user content, credentials or independently constructed env.
 """
 import hashlib
 import json
+import threading
+from collections import OrderedDict
 from pathlib import Path
-from .core import classify, ident, validate_profile
+from .core import Bridge, classify, ident, validate_profile
 
 STAGES = {'received': 1, 'submitted': 2, 'returned': 3, 'replied': 4, 'failed': 5}
 LABELS = {'received': '已接收', 'submitted': '已提交 Routine',
@@ -23,6 +25,10 @@ def card(stage):
             'body': {'elements': [{'tag': 'markdown', 'content': 'Bridge 阶段：'+LABELS[stage]}]}}
 
 
+class Cancelled(Exception):
+    pass
+
+
 class Progress:
     def __init__(self, settings, call):
         self.reaction = settings.get('reaction_enabled') is True
@@ -37,6 +43,99 @@ class Progress:
         self.profile = validate_profile(settings.get('cli_profile'))
         # Production passes Capabilities.send, which supplies cli_environment().
         self.call = call
+        self._condition = threading.Condition()
+        self._pending = OrderedDict()
+        self._stop = threading.Event()
+        self._thread = None
+        self._busy = False
+        self._owner = None
+        self._unreaped = False
+
+    def submit(self, bridge, mid, stage):
+        """Bounded, memory-only hints. No file/DB/CLI IO on the caller thread."""
+        if (not self.live or not (self.reaction or self.cards) or bridge.gate is None
+                or stage not in STAGES or not ident(mid, 'om_')):
+            return
+        with self._condition:
+            if self._stop.is_set():
+                return
+            if self._owner is None:
+                self._owner = bridge
+            key = (str(bridge.path), mid)
+            if key not in self._pending and len(self._pending) >= 32:
+                return  # UI is lossy; durable text outcomes remain authoritative.
+            old = self._pending.get(key)
+            if old:
+                previous = old[-1]
+                if previous == 'replied' or previous == 'failed' and stage != 'replied':
+                    stage = previous
+                elif STAGES[stage] < STAGES[previous] and stage not in ('replied', 'failed'):
+                    stage = previous
+            self._pending[key] = (bridge.path, bridge.cfg, bridge.clock,
+                                  bridge.gate, bridge.mode, mid, stage)
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name='optional-ui', daemon=True)
+                self._thread.start()
+            self._condition.notify_all()
+
+    def _run(self):
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._stop.is_set() or self._pending)
+                if self._stop.is_set():
+                    return
+                _, job = self._pending.popitem(last=False)
+                self._busy = True
+            local = None
+            try:
+                path, cfg, clock, gate, mode, mid, stage = job
+                local = Bridge(path, cfg, clock, gate, mode)
+                self.advance(local, mid, stage)
+            except Exception:
+                pass  # No payload/exception disclosure; no retry of this hint.
+            except BaseException:
+                # An unreaped child keeps the durable gate operation barrier.
+                # Do not dispatch anything else from this instance.
+                with self._condition:
+                    self._stop.set()
+                    self._unreaped = True
+                    self._pending.clear()
+                return
+            finally:
+                if local is not None:
+                    local.close()
+                with self._condition:
+                    self._busy = False
+                    self._condition.notify_all()
+
+    def wait_idle(self, timeout=5):
+        """Observation for offline checks; never called by the main path."""
+        with self._condition:
+            return self._condition.wait_for(lambda: not self._busy and not self._pending, timeout)
+
+    def shutdown(self, owner=None):
+        # Shared test/client instances must not be stopped by non-owning bridges.
+        if owner is not None and owner is not self._owner:
+            return True
+        with self._condition:
+            self._stop.set()
+            self._pending.clear()
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is not None:
+            thread.join(.25)
+        # A blocked injected IO retains its lease and unknown intent. Never a
+        # drain certificate: pause must still wait for actual completion.
+        return not self._unreaped and (thread is None or not thread.is_alive())
+
+    def cancelled(self, bridge):
+        if self._stop.is_set():
+            return True
+        try:
+            bridge.gate.require_active(bridge.mode)
+            return False
+        except Exception:
+            return True
 
     def schema(self, db):
         db.execute('''CREATE TABLE IF NOT EXISTS progress (
@@ -59,13 +158,21 @@ class Progress:
         if stage not in STAGES or not ident(mid, 'om_'):
             return
         # Order: shared gate lease -> exclusive UI lock -> short DB transaction.
-        # Main bridge transactions finish before feedback; no DB lock spans IO.
-        # The gate's nested leases are shared; pause never waits with a DB txn.
+        # Worker-only, both file locks nonblocking. No DB write lock spans IO.
+        # A live UI lease still prevents pause from falsely certifying drain.
         try:
-            with bridge.gate.lease(bridge.mode, mid):
-                with bridge.gate.lock(True, 'progress.lock'):
-                    self.schema(bridge.db)
-                    self._advance(bridge, mid, stage)
+            with bridge.gate.lease(bridge.mode, mid, blocking=False):
+                try:
+                    with bridge.gate.lock(True, 'progress.lock', blocking=False):
+                        self.schema(bridge.db)
+                        try:
+                            self._advance(bridge, mid, stage)
+                        except Cancelled:
+                            bridge.db.execute("UPDATE progress SET diagnostic='cancelled_unconfirmed' WHERE mid=?", (mid,))
+                except BlockingIOError:
+                    # No IO started. Leave the lease normally, without inventing
+                    # a crashed-operation barrier for a deliberately dropped hint.
+                    return
         except Exception:
             # No raw exception strings. Existing unknown intent remains durable.
             try:
@@ -148,6 +255,8 @@ class Progress:
         return dict(zip((d[0] for d in cursor.description), cursor.fetchone()))
 
     def operation(self, bridge, mid, column, method, params, data):
+        if self.cancelled(bridge):
+            raise Cancelled()
         assert column in ('reaction', 'card_state')
         op = 'reaction_op' if column == 'reaction' else 'card_op'
         outcome = 'reaction_result' if column == 'reaction' else 'card_result'
@@ -165,7 +274,15 @@ class Progress:
                 argv += ['--data', json.dumps(data)]
         argv += ['--json']
         try:
-            result = self.call(argv, '')
+            # Production's bound method exposes a cancellable UI capability;
+            # injected offline calls may block, but retain this worker and lease.
+            capability = getattr(self.call, '__self__', None)
+            if capability is not None and hasattr(capability, 'ui_send'):
+                result = capability.ui_send(argv, '', lambda: self.cancelled(bridge))
+            else:
+                result = self.call(argv, '')
+            if self.cancelled(bridge):
+                result = None
             tag = 'envelope_confirmed' if success(result) else 'unknown'
             if isinstance(result, dict):
                 error = result.get('error')
