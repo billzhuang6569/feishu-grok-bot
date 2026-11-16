@@ -1,0 +1,45 @@
+# 发布 allowlist
+
+仅下列文件及候选 ALLOWLIST.json 可进入干净初始导入。每项 SHA-256 在 ALLOWLIST.json；manifest 不自哈希。全部代码、合成测试、部署模板均完整导出；原历史不可上传。
+
+- `.gitignore`
+- `CONTRIBUTING.md`
+- `HANDOFF.md`
+- `LICENSE`
+- `README.md`
+- `SECURITY.md`
+- `THIRD_PARTY_NOTICES.md`
+- `bin/context`
+- `bin/receive`
+- `bin/reply`
+- `bin/run-tests`
+- `bin/selfcheck`
+- `bin/stop-bus`
+- `config/example.json`
+- `docs/COMPATIBILITY.md`
+- `docs/DEPLOY.md`
+- `docs/OPEN-SOURCE-AUDIT.md`
+- `docs/PROGRESS.md`
+- `docs/PROTOCOL-SOURCES.md`
+- `docs/RELEASE-ALLOWLIST.md`
+- `docs/RELEASE-MAPPING.md`
+- `pyproject.toml`
+- `requirements.lock`
+- `src/feishu_grok_bot/__init__.py`
+- `src/feishu_grok_bot/__main__.py`
+- `src/feishu_grok_bot/core.py`
+- `src/feishu_grok_bot/gate.py`
+- `src/feishu_grok_bot/live.py`
+- `src/feishu_grok_bot/ops.py`
+- `src/feishu_grok_bot/progress.py`
+- `templates/gate-admin.py`
+- `templates/trusted-context.sh`
+- `templates/trusted-reply.sh`
+- `tests/run.py`
+- `tests/selfcheck.py`
+- `tests/test_bridge.py`
+- `tests/test_capabilities.py`
+- `tests/test_phase2.py`
+- `tests/test_phase3.py`
+- `tests/test_phase4.py`
+- `tests/test_receiver.py`
