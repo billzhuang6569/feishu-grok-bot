@@ -15,7 +15,7 @@ bin/selfcheck
 
 测试使用合成数据、临时状态与 mock；runner 禁止网络和真实子进程。部署时须单独安装审核后的官方 CLI。
 
-启用 UI 后采用单 worker、32 消息有界合并队列；主路径只投递，不等待 UI。慢 UI 不拖住 Routine post、正文 send 或下一入站。队列满或停止时允许跳帧；UI CLI 可取消，unknown 不重放，pause 仍须取得真实排空证明。没有新增配置，见 [进度协议](docs/PROGRESS.md)。
+启用 UI 后采用单 worker、32 消息有界合并队列；主路径只投递，不等待 UI。慢 UI 不拖住 Routine post、正文 send 或下一入站。队列满或停止时允许跳帧；每次 UI 由 Linux subreaper 监管，取消/owner EOF 触发进程组与收养后代回收；只有无子进程证明才能释放 operation。unknown 不重放，缺证明保留屏障。没有新增配置，见 [进度协议](docs/PROGRESS.md)。
 
 - [完整部署、迁移、停启和回滚](docs/DEPLOY.md)
 - [配置与行为兼容](docs/COMPATIBILITY.md)
@@ -26,3 +26,5 @@ bin/selfcheck
 - [交接](HANDOFF.md)
 
 公开历史必须来自干净 allowlist 候选的全新导入，仅包含 ALLOWLIST.json 列出的文件及清单自身；不得上传原开发历史或携带原 git 元数据。
+
+UI 平台要求 Linux subreaper、可读 `/proc`、新会话与信号权限。进程组不能保证任意逃逸者终止；仅内核跟踪并回收的执行树属于证书。监管异常退出、不可达/不可收养执行者或外部服务接手工作无法保证终止，缺证明必须保留 operations、禁止切代并外部核实。默认关闭、尚未生产验收；没有新增配置或迁移。真实合成进程回归独立运行 `./bin/run-integration`，范围见 [进度协议](docs/PROGRESS.md)。

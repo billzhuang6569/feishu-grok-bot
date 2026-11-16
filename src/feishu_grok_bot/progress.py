@@ -128,11 +128,11 @@ class Progress:
         # drain certificate: pause must still wait for actual completion.
         return not self._unreaped and (thread is None or not thread.is_alive())
 
-    def cancelled(self, bridge):
+    def cancelled(self, bridge, polling=False):
         if self._stop.is_set():
             return True
         try:
-            bridge.gate.require_active(bridge.mode)
+            bridge.gate.require_active(bridge.mode, timeout=0 if polling else 30)
             return False
         except Exception:
             return True
@@ -278,7 +278,7 @@ class Progress:
             # injected offline calls may block, but retain this worker and lease.
             capability = getattr(self.call, '__self__', None)
             if capability is not None and hasattr(capability, 'ui_send'):
-                result = capability.ui_send(argv, '', lambda: self.cancelled(bridge))
+                result = capability.ui_send(argv, '', lambda: self.cancelled(bridge, polling=True))
             else:
                 result = self.call(argv, '')
             if self.cancelled(bridge):

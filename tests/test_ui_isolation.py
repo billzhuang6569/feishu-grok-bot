@@ -242,106 +242,55 @@ class IsolationTests(Fixtures, unittest.TestCase):
             self.assertIsNone(p._thread); self.assertEqual(calls, [])
 
 
-class UIChild:
-    """Synthetic Popen: no socket, OS child, CLI or credential access."""
-    def __init__(self):
-        self.entered = threading.Event(); self.release = threading.Event()
-        self.killed = False; self.reaped = False
-    def communicate(self, input=None, timeout=None):
-        self.entered.set()
-        if not self.release.wait(3): raise AssertionError('synthetic test did not release child')
-        raise subprocess.TimeoutExpired('synthetic', timeout)
-    def poll(self): return 0 if self.killed else None
-    def kill(self): self.killed = True
-    def wait(self, timeout): self.reaped = True; return 0
-
-
 class CancellationTests(Fixtures, unittest.TestCase):
-    def test_production_ui_capability_pause_kills_and_reaps_before_certificate(self):
-        child = UIChild(); cap = Capabilities(SETTINGS, True)
-        b, p, g, _ = self.setup_bridge(cap.send)
-        done = threading.Event(); errors = []
-        def pause():
-            try: g.pause(); done.set()
-            except Exception as exc: errors.append(type(exc).__name__)
-        with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child) as popen:
-            b.accept(event(), lambda p: 200); self.assertTrue(child.entered.wait(2))
-            t = threading.Thread(target=pause); t.start()
-            try:
-                self.wait_paused(g); self.assertFalse(done.is_set())
-            finally:
-                child.release.set(); t.join(3)
-            self.idle(p)
-            self.assertTrue(done.is_set()); self.assertEqual(errors, [])
-            self.assertTrue(child.killed); self.assertTrue(child.reaped)
-            self.assertEqual(popen.call_count, 1)
-            self.assertEqual(popen.call_args.kwargs['env'], {'HOME': '/synthetic/home', 'PATH': '/usr/bin:/bin'})
-            self.assertEqual(p.row(b.db, 'om_SYNTHETIC')['reaction'], 'unknown')
+    def capability(self, proof=b'{"drained":true,"result":null}', status=0):
+        from unittest.mock import Mock
+        child = Mock()
+        child.communicate.return_value = (proof, None)
+        child.wait.return_value = status
+        return Capabilities(SETTINGS, True), child
 
-    def test_production_ui_shutdown_cancels_and_reaps(self):
-        child = UIChild(); cap = Capabilities(SETTINGS, True)
-        b, p, g, _ = self.setup_bridge(cap.send)
+    def invoke(self, cap, child, cancelled=lambda: False):
         with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child):
-            b.accept(event(), lambda p: 200); self.assertTrue(child.entered.wait(2))
-            self.assertFalse(p.shutdown())
-            child.release.set(); self.idle(p)
-            self.assertTrue(p.shutdown()); self.assertTrue(child.killed); self.assertTrue(child.reaped)
-            self.assertEqual(p.row(b.db, 'om_SYNTHETIC')['reaction'], 'unknown')
-        g.pause()
+             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child) as spawn:
+            value = cap.ui_send([SETTINGS['cli_path'], 'synthetic'], 'body', cancelled)
+            return value, spawn.call_args
 
     def test_ui_child_success_uses_stdin_and_shared_environment(self):
-        cap = Capabilities(SETTINGS, True)
-        from unittest.mock import Mock
-        import json
-        child = Mock()
-        child.communicate.return_value = (json.dumps(response()).encode(), None)
-        child.poll.return_value = 0
-        with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child):
-            self.assertEqual(cap.ui_send([SETTINGS['cli_path'], 'synthetic'], 'body', lambda: False), response())
-        child.kill.assert_not_called()
-        child.wait.assert_called_once_with(timeout=1)
+        cap, child = self.capability(b'{"drained":true,"result":{"ok":true}}')
+        value, args = self.invoke(cap, child)
+        self.assertEqual(value, {'ok': True})
         self.assertEqual(child.communicate.call_args.kwargs['input'], b'body')
-        self.assertLessEqual(child.communicate.call_args.kwargs['timeout'], .1)
+        self.assertEqual(args.kwargs['env'], {'HOME': '/synthetic/home', 'PATH': '/usr/bin:/bin'})
+        self.assertEqual(len(args.kwargs['pass_fds']), 1)
 
-    def test_ui_child_budget_expiry_kills_and_reaps(self):
-        child = UIChild(); cap = Capabilities(SETTINGS, True)
-        with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child), \
-             patch('feishu_grok_bot.live.time.monotonic', side_effect=[0, 31]):
-            self.assertIsNone(cap.ui_send([SETTINGS['cli_path']], '', lambda: False))
-        self.assertTrue(child.killed); self.assertTrue(child.reaped)
-        self.assertFalse(child.entered.is_set())
+    def test_no_proof_retains_barrier(self):
+        from feishu_grok_bot.live import UIUnreaped
+        cap, child = self.capability(b'{}')
+        with self.assertRaises(UIUnreaped): self.invoke(cap, child)
 
-    def test_failed_kill_keeps_unknown_and_gate_barrier(self):
-        child = UIChild()
-        def failed_kill(): raise OSError('synthetic failure')
-        child.kill = failed_kill
-        cap = Capabilities(SETTINGS, True)
+    def test_abnormal_supervisor_exit_rejects_proof(self):
+        from feishu_grok_bot.live import UIUnreaped
+        cap, child = self.capability(status=2)
+        with self.assertRaises(UIUnreaped): self.invoke(cap, child)
+
+    def test_malformed_proof_rejected(self):
+        from feishu_grok_bot.live import UIUnreaped
+        cap, child = self.capability(b'incomplete')
+        with self.assertRaises(UIUnreaped): self.invoke(cap, child)
+
+    def test_pre_cancel_starts_no_process(self):
+        cap, child = self.capability()
+        value, args = self.invoke(cap, child, lambda: True)
+        self.assertIsNone(value); self.assertIsNone(args)
+
+    def test_supervisor_failure_keeps_unknown_and_gate_barrier(self):
+        cap, child = self.capability(status=3)
         b, p, g, _ = self.setup_bridge(cap.send)
         with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child), \
-             patch('feishu_grok_bot.live.time.monotonic', side_effect=[0, 31]):
+             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child):
             b.accept(event(), lambda p: 200); self.idle(p)
         self.assertFalse(p.shutdown())
         self.assertEqual(p.row(b.db, 'om_SYNTHETIC')['reaction'], 'unknown')
         with self.assertRaises(Fenced): g.pause()
-
-    def test_ui_child_budget_and_failed_reap_retains_gate_barrier(self):
-        child = UIChild()
-        def unreaped(timeout): raise TimeoutError()
-        child.wait = unreaped
-        cap = Capabilities(SETTINGS, True)
-        b, p, g, _ = self.setup_bridge(cap.send)
-        # Synthetic monotonic expires immediately after spawning: no real wait.
-        with patch.dict('os.environ', {'HOME': '/synthetic/home'}, clear=True), \
-             patch('feishu_grok_bot.live.subprocess.Popen', return_value=child), \
-             patch('feishu_grok_bot.live.time.monotonic', side_effect=[0, 31]):
-            b.accept(event(), lambda p: 200); self.idle(p)
-        self.assertTrue(child.killed)
-        self.assertFalse(p.shutdown(), 'unreaped child cannot be reported drained')
-        with self.assertRaises(Fenced): g.pause()
         with self.assertRaises(Fenced): g.activate('new')
-        self.assertEqual(p.row(b.db, 'om_SYNTHETIC')['reaction'], 'unknown')

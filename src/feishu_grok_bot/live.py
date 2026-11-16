@@ -10,6 +10,7 @@ import selectors
 import signal
 import subprocess
 import time
+import sys
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from .core import Config, Bridge, EVENT, validate_profile, stop_argv, normalize
@@ -74,43 +75,61 @@ class Capabilities:
         return json.loads(done.stdout)
 
     def ui_send(self, argv, body, cancelled):
-        """One bounded UI child; cancellation kills and reaps before lease exit.
+        """One per-call subreaper; only its ECHILD proof permits lease exit.
 
         Text sends keep their existing capability and classification contract.
-        A failed reap escapes, leaving the durable gate operation barrier.
+        Missing proof escapes, leaving the durable gate operation barrier.
         """
         if cancelled():
             return None
-        proc = subprocess.Popen([self.cli]+argv[1:], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                env=cli_environment())
-        deadline = time.monotonic()+30
+        control, cancel = os.pipe()
+        proc = None
         try:
+            proc = subprocess.Popen(
+                [sys.executable, '-I', '-B', str(Path(__file__).with_name('ui_boundary.py')),
+                 str(control), self.cli]+argv[1:],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=cli_environment(), pass_fds=(control,), start_new_session=True)
+            os.close(control)
+            control = None
+            deadline = time.monotonic()+30
             first = True
-            while not cancelled() and time.monotonic() < deadline:
+            while True:
+                if cancelled() or time.monotonic() >= deadline:
+                    os.close(cancel)
+                    cancel = None
+                    break
                 try:
-                    out, _ = proc.communicate(input=body.encode() if first else None,
-                                              timeout=min(.1, max(.001, deadline-time.monotonic())))
-                    return json.loads(out)
+                    out, _ = proc.communicate(input=body.encode() if first else None, timeout=.1)
+                    break
                 except subprocess.TimeoutExpired:
                     first = False
-            return None
+            if cancel is None:
+                out, _ = proc.communicate(timeout=4)
+            proof = json.loads(out)
+            if proc.wait(timeout=1) != 0 or proof.get('drained') is not True:
+                raise UIUnreaped()
+            return proof.get('result')
+        except BaseException as exc:
+            # EOF leaves the independent supervisor able to finish cleanup even
+            # if this worker/owner exits. Missing proof never releases the lease.
+            if isinstance(exc, UIUnreaped):
+                raise
+            raise UIUnreaped() from None
         finally:
-            # Any failed termination/reap must escape ordinary UI error
-            # handling. A still-live child is not an honestly drained lease.
             try:
-                if proc.poll() is None:
-                    proc.kill()
-                proc.wait(timeout=1)
+                for fd in (control, cancel):
+                    if fd is not None:
+                        os.close(fd)
+                if proc is not None:
+                    for name in ('stdin', 'stdout'):
+                        pipe = getattr(proc, name, None)
+                        if pipe is not None:
+                            pipe.close()
             except Exception:
+                # A local close error must never replace UIUnreaped with an
+                # ordinary exception that the optional UI layer can swallow.
                 raise UIUnreaped() from None
-            for name in ('stdin', 'stdout'):
-                pipe = getattr(proc, name, None)
-                if pipe is not None:
-                    try:
-                        pipe.close()
-                    except Exception:
-                        pass  # Close errors do not negate a confirmed child exit.
 
     def post(self, payload):
         # Deployment maps these names via protected service configuration.

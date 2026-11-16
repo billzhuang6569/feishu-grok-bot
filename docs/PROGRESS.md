@@ -12,9 +12,15 @@ progress.stage 仅代表期望阶段，不代表已调用成功；card_stage 才
 
 worker 使用独立 SQLite 连接。锁顺序仍为 shared gate lease → 独占 progress.lock → 短 SQLite 事务，但两把文件锁均非阻塞获取：竞争时放弃该提示；主路径不获取 progress.lock。UI 独占锁跨 IO 和确认提交，锁内重读持久快照，避免重复写入或过期快照覆盖。数据库写事务不跨 CLI IO。queued 提示没有外部能力；执行时重新核验当前 generation 的 claim、目标和 profile，每次 UI 操作前再查暂停意图。旧代提示不能在新代运行。
 
-每次生产 UI CLI 有内部 30 秒预算，以至多 100ms 的 communicate 等待片段检查 pause/shutdown；取消或超预算时 kill 自己的 UI child，并以最多 1 秒 wait 证明其退出，才释放操作 lease。终止或回收失败保留 operations 崩溃屏障、unknown intent 和未排空状态，不继续执行其它提示。以上为子进程等待预算，不是操作系统或本地数据库延迟的实时承诺；正文发送契约不变。
+每次生产 UI 调用启动一个短生命周期 Python 监管进程（非常驻服务、无新增依赖）。平台前提为 Linux、可用的 `/proc` 子进程列表、`prctl(PR_SET_CHILD_SUBREAPER)`、`waitid(WNOWAIT)`、新会话/进程组及对本次后代的发送信号权限。监管者在启动 CLI 前成为 subreaper；CLI 使用新会话，监管者独立持有其生命周期。30 秒是 CLI 执行预算，不是数据库或内核实时退出保证。
 
-pause 仍先提交暂停意图，再等 shared leases 实际排空并检查残留 operations，正常返回才是证书。未开始提示被 gate 禁止；正在执行的 UI 必须结束或确认取消。shutdown 清空尚未执行的内存提示，停止接收新提示，最多等 worker 250ms；仍阻塞或未证明子进程退出时返回未排空，receiver 退出路径报 ui_shutdown_unconfirmed，而非成功排空。不可取消的注入调用即使主路径已继续，仍持 lease 和 unknown；其返回前 pause 不能成功。若进程退出留下 operations，重启必须人工核实，禁止删屏障。helper 的正文 sent/unknown/failed 返回值只描述正文，不是 UI 排空证书。
+取消使用 owner 独占写端的控制管道：内存 shutdown 信号足以关闭写端，owner 正常退出也使管道 EOF。监管者不访问 gate 数据库，独立终止 CLI 进程组，再反复 kill/reap 自己被内核收养的子进程。CLI 领导者在 killpg 前不被回收，避免其 PID 提前复用。普通 fork、双重 fork 和自行 setsid 的后代可通过 subreaper 收养后清理；正式 integration 包含 fork 与 setsid。只有存活监管者的 `waitpid(-1)` 返回 ECHILD，且 owner 收到完整证明并确认监管者正常退出，才允许释放该 UI operation。进程组本身不能阻止任意逃逸。
+
+执行时仍复验 generation/目标/profile，UI 轮询的 gate 检查使用 SQLite timeout=0，busy 即取消；kill/reap 不依赖 SQLite。pause 先提交暂停意图，再等 leases 并检查 operations，正常返回才是证书。shutdown 停收并丢弃未开始提示，最多 join worker 250ms；未完成返回 false。worker 即使被正常解释器退出截断，独立监管者仍可通过 EOF 完成清理；未收到证明则 operations 留存，不能把后台清理可能完成当作排空证明。helper 正文状态仍只描述正文。
+
+安全边界限于这个活着的监管者能由内核跟踪和回收的执行树，不是恶意程序沙箱。脱离进程组的进程不能仅凭 killpg 保证终止；只有被收养并最终证明 ECHILD 的后代才在证书内。无法收养/不可达 PID、外部既有服务接手的工作、权限或平台变化、不可终止的内核等待、监管者遭 SIGKILL/崩溃、机器异常退出等均不能保证终止。缺证明、异常监管退出、kill/reap 失败均保留 operations 与 unknown，禁止 pause 证书和切代，必须由部署者外部核实整个边界；禁止删除屏障解锁。清理无法完成时监管者继续尝试，owner 的有限等待可返回未确认。
+
+默认关闭，尚未生产验收。没有新增配置或迁移；既有持久 intent、unknown 不重放及 gate schema 保持兼容。`bin/run-tests` 为禁止真实子进程的 unit；独立 `bin/run-integration` 只运行私有临时目录内有限的合成进程，禁止网络，并在 finally 精确回收子进程，清理失败即失败。这些测试不等同于真实部署验收。
 
 非终态卡片每秒至多更新一次；终态绕过节流但仍受队列容量、gate 和取消约束。重启恢复与 receiver 本地周期检查只异步投递 sent、unknown/failed、过期请求的收尾提示；不等待 UI，不消费额外事件或发查询请求。已知 active 句柄可尝试一次收尾；未知操作永不自动重放，未确认 terminal patch 的 card_stage 保留旧值。阶段终态规则在合并提示和持久更新中均保留，持久正文 sent 始终有最终解释权。
 

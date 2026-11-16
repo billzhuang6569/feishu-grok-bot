@@ -71,7 +71,7 @@ initialize 建立暂停状态；只有 pause 状态且无残留 operation 才能
 
 ## 5. 停止、重启与健康
 
-先执行管理员 `gate-admin.py pause`，等待正常返回取得排空证明。之后向自己管理的 receiver PID 发 SIGTERM，等待退出；不要用按名称批量 kill。pause 阻塞或失败不等于排空，禁止随后 activate；残留 operations 要人工核实，不可删记录解锁。停 receiver 时它终止自己的 consumer child，并取消自己的 UI child。UI 采用单 worker、32 消息有界合并队列，满载或停止可丢帧，主路径不等待 UI；CLI 内部 30 秒预算，pause/shutdown 检查取消并 kill/reap。shutdown 最多等 worker 250ms，未结束或回收失败报 ui_shutdown_unconfirmed；这不是排空证明，仍须保留 gate 屏障并人工核实。没有新增配置，详见 [进度协议](PROGRESS.md)。
+先执行管理员 `gate-admin.py pause`，等待正常返回取得排空证明。之后向自己管理的 receiver PID 发 SIGTERM，等待退出；不要用按名称批量 kill。pause 阻塞或失败不等于排空，禁止随后 activate；残留 operations 要人工核实，不可删记录解锁。停 receiver 时它终止自己的 consumer child，并以控制管道取消独立监管的 UI 执行树。UI 采用单 worker、32 消息有界合并队列，满载或停止可丢帧，主路径不等待 UI；CLI 内部 30 秒预算；Linux subreaper 在取消或 owner EOF 后 kill 进程组并回收收养后代，ECHILD 才证明清空。shutdown 最多等 worker 250ms，未结束或回收失败报 ui_shutdown_unconfirmed；这不是排空证明，仍须保留 gate 屏障并人工核实。没有新增配置，详见 [进度协议](PROGRESS.md)。
 
 重启复用原 DB/gate：确认进程退出，`activate --mode new`，再启动唯一 receiver。切代也采用相同顺序，两模式共用 gate/DB。不得替换锁文件、删除 claims 或清空 pending/unknown。child 退出有最多五次退避重连；child 不退出即停止，local ready 但 upstream stale 不强行重启事件总线。外部无限自动重启会绕过退避意图，不应配置。
 
@@ -86,3 +86,5 @@ initialize 建立暂停状态；只有 pause 状态且无残留 operation 才能
 可选 reaction / 阶段卡片默认关闭，尚未生产验收，见 [reaction 与阶段卡片](https://github.com/billzhuang6569/feishu-grok-bot/issues/2)。当前 Webhook Routine 未找到可供本桥使用的官方工具事件或进度出口，见 [真实工具事件](https://github.com/billzhuang6569/feishu-grok-bot/issues/1)；这不等于官方明确不支持。卡片仅显示 bridge 已观察阶段。
 
 公开仓库：https://github.com/billzhuang6569/feishu-grok-bot 。公开历史必须来自干净 allowlist 候选的全新导入，仅包含 ALLOWLIST.json 列出的文件及清单自身；不得上传原开发历史或携带原 git 元数据。
+
+UI 平台要求 Linux subreaper、可读 `/proc`、新会话与信号权限。进程组不能保证任意逃逸者终止；仅内核跟踪并回收的执行树属于证书。监管异常退出、不可达/不可收养执行者或外部服务接手工作无法保证终止，缺证明必须保留 operations、禁止切代并外部核实。默认关闭、尚未生产验收；没有新增配置或迁移。真实合成进程回归独立运行 `./bin/run-integration`，范围见 [进度协议](PROGRESS.md)。

@@ -45,16 +45,16 @@ class Gate:
             raise Fenced('private_gate_required')
 
     @contextmanager
-    def db(self):
+    def db(self, timeout=30):
         p = self.root/'gate.sqlite'
         if p.is_symlink():
             raise Fenced('unsafe_gate_database')
         if p.exists() and (p.stat().st_uid != os.getuid() or p.stat().st_mode & 0o077):
             raise Fenced('private_gate_database_required')
-        con = sqlite3.connect(p, timeout=30, isolation_level=None)
+        con = sqlite3.connect(p, timeout=timeout, isolation_level=None)
         p.chmod(0o600)
-        con.execute('PRAGMA synchronous=FULL')
         try:
+            con.execute('PRAGMA synchronous=FULL')
             yield con
         finally:
             con.close()
@@ -72,8 +72,8 @@ class Gate:
         finally:
             os.close(fd)
 
-    def require_active(self, mode):
-        with self.db() as db:
+    def require_active(self, mode, timeout=30):
+        with self.db(timeout) as db:
             row = db.execute('SELECT mode,paused FROM control WHERE id=1').fetchone()
             if row != (mode, 0) or mode not in ('new', 'legacy-compatible'):
                 raise Fenced('inactive_generation')
