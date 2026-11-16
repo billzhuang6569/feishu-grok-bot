@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -eu
+cd "$(dirname "$0")/.."
+export PYTHONPATH="$PWD/src"
+exec python3 -m feishu_grok_bot reply "$@"
