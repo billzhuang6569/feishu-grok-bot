@@ -1,0 +1,17 @@
+{
+  "live_enabled": false,
+  "cli_path": "<APPROVED_ABSOLUTE_CLI_PATH>",
+  "state_dir": "<PRIVATE_NEW_STATE_DIRECTORY>",
+  "policy": {
+    "app": "<DEPLOYMENT_APP_MAPPING>",
+    "tenant": "<DEPLOYMENT_TENANT_MAPPING>",
+    "owner": "<DEPLOYMENT_OWNER_MAPPING>",
+    "chat": "<DEPLOYMENT_SINGLE_P2P_MAPPING>"
+  },
+  "shared_gate_dir": "<TRUSTED_SHARED_GATE_ABSOLUTE_DIRECTORY>",
+  "gate_mode": "new",
+  "reaction_enabled": false,
+  "progress_card_enabled": false,
+  "reaction_emoji": "OnIt",
+  "cli_profile": "<CLI_PROFILE>"
+}
